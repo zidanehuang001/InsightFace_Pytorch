@@ -1,5 +1,5 @@
 from data.data_pipe import de_preprocess, get_train_loader, get_val_data
-from model import Backbone, Arcface, MobileFaceNet, Am_softmax, l2_norm
+from model import Backbone, Arcface, MobileFaceNet, Am_softmax, l2_norm, IR_With_Head
 from verifacation import evaluate
 import torch
 from torch import optim
@@ -33,7 +33,8 @@ class face_learner(object):
 
             self.writer = SummaryWriter(conf.log_path)
             self.step = 0
-            self.head = Arcface(embedding_size=conf.embedding_size, classnum=self.class_num).cuda()
+            #self.head = Arcface(embedding_size=conf.embedding_size, classnum=self.class_num).cuda()
+            self.model = IR_With_Head(conf.net_depth, conf.drop_ratio, conf.net_mode, embedding_size=conf.embedding_size, classnum=self.class_num).cuda()
             self.local_rank = args.local_rank
             print('two model heads generated')
 
@@ -47,11 +48,13 @@ class face_learner(object):
                                 ], lr = conf.lr, momentum = conf.momentum)
             else:
                 self.optimizer = optim.SGD([
-                                    {'params': paras_wo_bn + [self.head.kernel], 'weight_decay': 5e-4},
+                                    {'params': paras_wo_bn + [self.model.kernel], 'weight_decay': 5e-4},
                                     {'params': paras_only_bn}
                                 ], lr = conf.lr, momentum = conf.momentum)
-            self.model, self.optimizer = amp.initialize(self.model, self.optimizer, opt_level='O1')
+            #self.model, self.optimizer = amp.initialize(self.model, self.optimizer, opt_level='O1')
+            self.model, self.optimizer = amp.initialize(self.model, self.optimizer, opt_level='O3', keep_batchnorm_fp32=True)
             print(self.optimizer, args.local_rank)
+            #self.head =  DistributedDataParallel(self.head)
             self.model = DistributedDataParallel(self.model)
             #self.model = torch.nn.parallel.DistributedDataParallel(self.model, device_ids=[args.local_rank])
 #             self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=40, verbose=True)
@@ -73,9 +76,9 @@ class face_learner(object):
             self.model.state_dict(), save_path /
             ('model_{}_accuracy:{}_step:{}_{}.pth'.format(get_time(), accuracy, self.step, extra)))
         if not model_only:
-            torch.save(
-                self.head.state_dict(), save_path /
-                ('head_{}_accuracy:{}_step:{}_{}.pth'.format(get_time(), accuracy, self.step, extra)))
+            #torch.save(
+            #    self.head.state_dict(), save_path /
+            #    ('head_{}_accuracy:{}_step:{}_{}.pth'.format(get_time(), accuracy, self.step, extra)))
             torch.save(
                 self.optimizer.state_dict(), save_path /
                 ('optimizer_{}_accuracy:{}_step:{}_{}.pth'.format(get_time(), accuracy, self.step, extra)))
@@ -87,7 +90,7 @@ class face_learner(object):
             save_path = conf.model_path            
         self.model.load_state_dict(torch.load(save_path/'model_{}'.format(fixed_str)))
         if not model_only:
-            self.head.load_state_dict(torch.load(save_path/'head_{}'.format(fixed_str)))
+            #self.head.load_state_dict(torch.load(save_path/'head_{}'.format(fixed_str)))
             self.optimizer.load_state_dict(torch.load(save_path/'optimizer_{}'.format(fixed_str)))
         
     def board_val(self, db_name, accuracy, best_threshold, roc_curve_tensor):
@@ -153,8 +156,9 @@ class face_learner(object):
 
             self.optimizer.zero_grad()
 
-            embeddings = self.model(imgs)
-            thetas = self.head(embeddings, labels)
+            #embeddings = self.model(imgs)
+            #thetas = self.head(embeddings, labels)
+            thetas = self.model(imgs, labels)
             loss = conf.ce_loss(thetas, labels)          
           
             #Compute the smoothed loss
@@ -206,8 +210,9 @@ class face_learner(object):
                 imgs = imgs.to(conf.device)
                 labels = labels.to(conf.device)
                 self.optimizer.zero_grad()
-                embeddings = self.model(imgs)
-                thetas = self.head(embeddings, labels)
+                #embeddings = self.model(imgs)
+                #thetas = self.head(embeddings, labels)
+                thetas = self.model(imgs, labels)
                 loss = conf.ce_loss(thetas, labels)
                 with amp.scale_loss(loss, self.optimizer) as scaled_loss:
                     scaled_loss.backward()
