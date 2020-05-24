@@ -1,0 +1,6 @@
+tqdm==4.23.4
+mxnet
+mxnet-cu102
+bcolz==1.2.1
+easydict==1.7
+tensorboardX==1.2

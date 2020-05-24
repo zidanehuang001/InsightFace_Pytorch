@@ -17,7 +17,7 @@ def get_config(training = True):
     conf.net_depth = 50
     conf.drop_ratio = 0.6
     conf.net_mode = 'ir_se' # or 'ir'
-    conf.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    conf.device = torch.device("cuda")
     conf.test_transform = trans.Compose([
                     trans.ToTensor(),
                     trans.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
@@ -36,7 +36,7 @@ def get_config(training = True):
         conf.lr = 1e-3
         conf.milestones = [12,15,18]
         conf.momentum = 0.9
-        conf.pin_memory = True
+        conf.pin_memory = False
 #         conf.num_workers = 4 # when batchsize is 200
         conf.num_workers = 3
         conf.ce_loss = CrossEntropyLoss()    

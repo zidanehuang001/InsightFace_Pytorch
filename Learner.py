@@ -13,15 +13,18 @@ from PIL import Image
 from torchvision import transforms as trans
 import math
 import bcolz
+from apex import amp
+from apex.parallel import DistributedDataParallel
+
 
 class face_learner(object):
-    def __init__(self, conf, inference=False):
+    def __init__(self, conf, args, inference=False):
         print(conf)
         if conf.use_mobilfacenet:
             self.model = MobileFaceNet(conf.embedding_size).to(conf.device)
             print('MobileFaceNet model generated')
         else:
-            self.model = Backbone(conf.net_depth, conf.drop_ratio, conf.net_mode).to(conf.device)
+            self.model = Backbone(conf.net_depth, conf.drop_ratio, conf.net_mode).cuda()
             print('{}_{} model generated'.format(conf.net_mode, conf.net_depth))
         
         if not inference:
@@ -30,8 +33,8 @@ class face_learner(object):
 
             self.writer = SummaryWriter(conf.log_path)
             self.step = 0
-            self.head = Arcface(embedding_size=conf.embedding_size, classnum=self.class_num).to(conf.device)
-
+            self.head = Arcface(embedding_size=conf.embedding_size, classnum=self.class_num).cuda()
+            self.local_rank = args.local_rank
             print('two model heads generated')
 
             paras_only_bn, paras_wo_bn = separate_bn_paras(self.model)
@@ -47,7 +50,10 @@ class face_learner(object):
                                     {'params': paras_wo_bn + [self.head.kernel], 'weight_decay': 5e-4},
                                     {'params': paras_only_bn}
                                 ], lr = conf.lr, momentum = conf.momentum)
-            print(self.optimizer)
+            self.model, self.optimizer = amp.initialize(self.model, self.optimizer, opt_level='O1')
+            print(self.optimizer, args.local_rank)
+            self.model = DistributedDataParallel(self.model)
+            #self.model = torch.nn.parallel.DistributedDataParallel(self.model, device_ids=[args.local_rank])
 #             self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=40, verbose=True)
 
             print('optimizers generated')    
@@ -183,6 +189,10 @@ class face_learner(object):
 
     def train(self, conf, epochs):
         self.model.train()
+        #conf.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        #self.model = torch.nn.DataParallel(self.model,device_ids=[0,1,2,3,4,5,6,7])
+        #self.model.to(conf.device)
+        #self.model = torch.nn.parallel.DistributedDataParallel(self.model, device_ids=[self.local_rank])
         running_loss = 0.            
         for e in range(epochs):
             print('epoch {} started'.format(e))
@@ -199,8 +209,11 @@ class face_learner(object):
                 embeddings = self.model(imgs)
                 thetas = self.head(embeddings, labels)
                 loss = conf.ce_loss(thetas, labels)
-                loss.backward()
-                running_loss += loss.item()
+                with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                    scaled_loss.backward()
+                    running_loss += scaled_loss.item()
+                #loss.backward()
+                #running_loss += loss.item()
                 self.optimizer.step()
                 
                 if self.step % self.board_loss_every == 0 and self.step != 0:
